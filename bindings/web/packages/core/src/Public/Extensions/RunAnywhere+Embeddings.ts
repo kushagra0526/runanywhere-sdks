@@ -12,7 +12,7 @@
  */
 
 import {
-  type InferenceFramework,
+  InferenceFramework,
   ModelCategory,
   type ModelLoadResult,
   type ModelUnloadResult,
@@ -28,6 +28,8 @@ import { SDKLogger } from '../../Foundation/SDKLogger.js';
 import { EmbeddingsProtoAdapter } from '../../Adapters/EmbeddingsProtoAdapter.js';
 import {
   getModuleForCapability,
+  getModuleForFramework,
+  getModuleForModel,
   type EmscriptenRunanywhereModule,
 } from '../../runtime/EmscriptenModule.js';
 import { WebModelLifecycle } from './RunAnywhere+ModelLifecycle.js';
@@ -87,6 +89,17 @@ function requireInitialized(): void {
 // ensureLoaded — mirrors Swift private func ensureLoaded(modelID:)
 // ---------------------------------------------------------------------------
 
+const EMBEDDING_FRAMEWORKS: ReadonlyArray<readonly [InferenceFramework, string]> = [
+  [InferenceFramework.INFERENCE_FRAMEWORK_LLAMA_CPP, 'llamacpp'],
+  [InferenceFramework.INFERENCE_FRAMEWORK_ONNX, 'onnx'],
+];
+
+function mainThreadOwnerFramework(modelID: string): InferenceFramework | undefined {
+  const owner = getModuleForModel(modelID);
+  if (!owner) return undefined;
+  return EMBEDDING_FRAMEWORKS.find(([, name]) => getModuleForFramework(name) === owner)?.[0];
+}
+
 async function ensureLoaded(modelID: string): Promise<InferenceFramework | undefined> {
   let requestedFramework: InferenceFramework | undefined;
   try {
@@ -96,9 +109,12 @@ async function ensureLoaded(modelID: string): Promise<InferenceFramework | undef
   } catch {
     requestedFramework = undefined;
   }
-  // A backend preference can load this model into a different worker than
-  // the catalog suggests. Reuse that live owner instead of reloading it.
-  requestedFramework = getBackendWorkerModelFramework(modelID) ?? requestedFramework;
+  // A backend preference can load this model into a different worker, or a
+  // different main-thread WASM, than the catalog suggests. Reuse that live
+  // owner instead of reloading it.
+  requestedFramework = getBackendWorkerModelFramework(modelID)
+    ?? mainThreadOwnerFramework(modelID)
+    ?? requestedFramework;
   const current = WebModelLifecycle.currentModel({
     category: ModelCategory.MODEL_CATEGORY_EMBEDDING,
     framework: requestedFramework,
